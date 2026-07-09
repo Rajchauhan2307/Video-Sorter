@@ -26,8 +26,8 @@ jobs:
           pip install pyinstaller pillow
 
       - name: Generate app icon
+        shell: python
         run: |
-          python -c "
           from PIL import Image, ImageDraw
           s = 256
           img = Image.new('RGBA', (s, s), (0, 0, 0, 0))
@@ -38,7 +38,6 @@ jobs:
           d.rounded_rectangle([190, 168, 218, 224], radius=8, fill=(61, 220, 132, 255))
           img.save('icon.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])
           print('icon ready')
-          "
 
       - name: Build EXE
         run: pyinstaller --onefile --windowed --name "RAJ-VIDEO-SORTER" --icon icon.ico sorter.py
