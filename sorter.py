@@ -9,7 +9,7 @@ import customtkinter as ctk
 from tkinter import filedialog
 
 APP_NAME = "RAJ VIDEO SORTER"
-VERSION = "v1.0"
+VERSION = "v1.2"
 
 # ---------- THEME ----------
 BG = "#07090D"
@@ -27,10 +27,12 @@ RED = "#FF5470"
 VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v",
               ".flv", ".wmv", ".mpg", ".mpeg", ".ts", ".mts", ".3gp"}
 
-# Sensitivity: HIGH = ek letter ka tukda bhi pakde
-SENS_THRESH = {"HIGH": 0.0012, "MEDIUM": 0.0035, "LOW": 0.008}
-FRAMES_TO_SCAN = 15
-PERSISTENCE = 0.70  # element must appear in 70%+ frames = static overlay
+# Sensitivity: HIGH = ek letter ka chhota tukda bhi pakde
+SENS_THRESH = {"HIGH": 0.0008, "MEDIUM": 0.0025, "LOW": 0.006}
+MIN_BLOB = {"HIGH": 15, "MEDIUM": 30, "LOW": 60}
+FRAMES_TO_SCAN = 16
+PERSISTENCE = 0.70   # pura video static
+HALF_PERSIST = 0.78  # sirf aadhe video mein aane wala logo
 
 
 # ---------- DETECTION ENGINE ----------
@@ -62,9 +64,11 @@ def sample_frames(path, n=FRAMES_TO_SCAN):
 
 
 def detect_logo(path, sens="HIGH"):
-    """Bottom-right zone deep scan.
-    Sharp static element (logo/text, chahe aadha ho ya ek letter) = LOGO.
-    Pura blur smudge ya khali corner = NO LOGO.
+    """Bottom-right zone deep scan v1.2.
+    - Chhota sa bhi sharp static tukda (letter/logo piece) = LOGO
+    - Aadhe video mein aane wala logo bhi pakda jata hai (half-split check)
+    - Black-bar border lines ignore
+    - Pura blur smudge ya khali corner = NO LOGO
     Video file ko sirf PADHA jata hai — kabhi modify nahi hota."""
     frames = sample_frames(path)
     if len(frames) < 3:
@@ -72,23 +76,47 @@ def detect_logo(path, sens="HIGH"):
     maps = []
     for fr in frames:
         h, w = fr.shape[:2]
-        roi = fr[int(h * 0.68):h, int(w * 0.55):w]
+        roi = fr[int(h * 0.62):h, int(w * 0.50):w]
         if roi.size == 0:
             continue
-        scale = 360.0 / roi.shape[1]
-        roi = cv2.resize(roi, (360, max(2, int(roi.shape[0] * scale))))
+        scale = 480.0 / roi.shape[1]
+        roi = cv2.resize(roi, (480, max(2, int(roi.shape[0] * scale))),
+                         interpolation=cv2.INTER_CUBIC)
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 70, 150)
+        edges = cv2.Canny(gray, 50, 130)
         maps.append((edges > 0).astype(np.float32))
     if not maps:
         raise RuntimeError("roi failed")
     hmin = min(m.shape[0] for m in maps)
     maps = [m[:hmin, :] for m in maps]
-    persist = np.mean(maps, axis=0)
-    static = (persist >= PERSISTENCE).astype(np.uint8)
-    static = cv2.morphologyEx(static, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-    ratio = float(static.sum()) / float(static.size)
-    return ratio >= SENS_THRESH.get(sens, 0.0012)
+    arr = np.stack(maps, axis=0)
+    half = len(maps) // 2
+    p_full = arr.mean(axis=0)
+    p_a = arr[:half].mean(axis=0) if half >= 3 else p_full
+    p_b = arr[half:].mean(axis=0) if (len(maps) - half) >= 3 else p_full
+    static = ((p_full >= PERSISTENCE) | (p_a >= HALF_PERSIST)
+              | (p_b >= HALF_PERSIST)).astype(np.uint8)
+    static = cv2.morphologyEx(static, cv2.MORPH_CLOSE,
+                              np.ones((3, 3), np.uint8))
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(static, 8)
+    H, W = static.shape
+    good_area = 0
+    max_blob = 0
+    for i in range(1, num):
+        bw = stats[i, cv2.CC_STAT_WIDTH]
+        bh = stats[i, cv2.CC_STAT_HEIGHT]
+        ar = stats[i, cv2.CC_STAT_AREA]
+        # black-bar / border lines ignore
+        if bw > 0.85 * W and bh <= 6:
+            continue
+        if bh > 0.85 * H and bw <= 6:
+            continue
+        good_area += ar
+        if ar > max_blob:
+            max_blob = ar
+    ratio = float(good_area) / float(H * W)
+    return (ratio >= SENS_THRESH.get(sens, 0.0008)
+            or max_blob >= MIN_BLOB.get(sens, 15))
 
 
 # ---------- APP ----------
@@ -143,7 +171,7 @@ class SorterApp(ctk.CTk):
         # Info + sensitivity
         info = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=9)
         info.pack(fill="x", **pad)
-        ctk.CTkLabel(info, text="Detection Zone: Bottom-Right  |  15-frame deep scan\n"
+        ctk.CTkLabel(info, text="Detection Zone: Bottom-Right  |  16-frame deep scan\n"
                                 "Logo/text ka ek tukda bhi = LOGO  •  Pura blur/khali = NO_LOGO\n"
                                 "COPY MODE — originals 100% safe, zero quality change",
                      font=("Segoe UI", 11), text_color=DIM,
